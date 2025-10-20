@@ -23,7 +23,7 @@ This will download and install `aptos-keyrotate` to `/usr/local/bin`.
 ## Usage
 
 ```bash
-# Basic rotation (auto-generate new key, backup to ./backups)
+# Basic rotation (auto-generate new key, backup to ~/.aptos/keyrotate-backups)
 aptos-keyrotate --profile my-wallet
 
 # Rotate with specific new key
@@ -44,7 +44,7 @@ Usage: aptos-keyrotate [OPTIONS]
 Options:
     --profile PROFILE              Existing Aptos CLI profile name (required)
     --new-private-key-file FILE    Path to new private key (auto-generated if omitted)
-    --backup-dir DIR               Backup directory for old keys (default: ./backups)
+    --backup-dir DIR               Backup directory for old keys (default: ~/.aptos/keyrotate-backups)
     --yes                          Skip confirmation prompts
     -h, --help                     Show this help message
     -v, --version                  Show version information

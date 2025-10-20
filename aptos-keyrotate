@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 # Default values
 PROFILE=""
 NEW_PRIVATE_KEY_FILE=""
-BACKUP_DIR="./backups"
+BACKUP_DIR="$HOME/.aptos/keyrotate-backups"
 ASSUME_YES=false
 GENERATED_KEY_FILE=""
 BACKUP_FILE=""
@@ -47,7 +47,7 @@ Usage: aptos-keyrotate [OPTIONS]
 Options:
     --profile PROFILE              Existing Aptos CLI profile name (required)
     --new-private-key-file FILE    Path to new private key (auto-generated if omitted)
-    --backup-dir DIR               Backup directory for old keys (default: ./backups)
+    --backup-dir DIR               Backup directory for old keys (default: ~/.aptos/keyrotate-backups)
     --yes                          Skip confirmation prompts
     -h, --help                     Show this help message
     -v, --version                  Show version information
@@ -58,7 +58,7 @@ Safety Features:
     • Automatic rollback if rotation verification fails
 
 Examples:
-    # Basic rotation (auto-generate new key, backup to ./backups)
+    # Basic rotation (auto-generate new key, backup to ~/.aptos/keyrotate-backups)
     aptos-keyrotate --profile my-wallet
 
     # Rotate with specific new key
