@@ -66,3 +66,9 @@ Safety Features:
 5. **Rollback**: If verification fails, automatically restores the old key from backup
 
 Your old private keys are safely stored in the backup directory for recovery if needed.
+
+## Showcase
+
+```bash
+aptos-keyrotate --profile my-wallet --yes
+```
