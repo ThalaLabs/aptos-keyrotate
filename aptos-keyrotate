@@ -13,11 +13,10 @@ NC='\033[0m' # No Color
 # Default values
 PROFILE=""
 NEW_PRIVATE_KEY_FILE=""
-SAVE_TO_PROFILE=""
 BACKUP_DIR="./backups"
-SKIP_BACKUP=false
 ASSUME_YES=false
 GENERATED_KEY_FILE=""
+BACKUP_FILE=""
 
 # Function to print colored messages
 error() {
@@ -41,33 +40,35 @@ show_help() {
     cat << EOF
 aptos-keyrotate - Simplify Aptos account key rotation
 
-Like rotating your keys, but simpler. Handles proven key rotation with automatic
-backups and safety checks.
+Handles proven key rotation with automatic backups, safety checks, and rollback.
 
 Usage: aptos-keyrotate [OPTIONS]
 
 Options:
     --profile PROFILE              Existing Aptos CLI profile name (required)
     --new-private-key-file FILE    Path to new private key (auto-generated if omitted)
-    --save-to-profile PROFILE      Save rotated config to new profile name
     --backup-dir DIR               Backup directory for old keys (default: ./backups)
-    --skip-backup                  Skip creating backup of old private key
     --yes                          Skip confirmation prompts
     -h, --help                     Show this help message
     -v, --version                  Show version information
 
+Safety Features:
+    • Old private key is ALWAYS backed up before rotation
+    • Profile is updated in-place with new key after successful rotation
+    • Automatic rollback if rotation verification fails
+
 Examples:
-    # Basic rotation (auto-generate new key)
+    # Basic rotation (auto-generate new key, backup to ./backups)
     aptos-keyrotate --profile my-wallet
 
     # Rotate with specific new key
     aptos-keyrotate --profile my-wallet --new-private-key-file ./new-key
 
-    # Save to new profile and custom backup location
-    aptos-keyrotate --profile my-wallet --save-to-profile my-wallet-rotated --backup-dir ~/key-backups
+    # Use custom backup location
+    aptos-keyrotate --profile my-wallet --backup-dir ~/key-backups
 
-    # Skip backup and confirmations
-    aptos-keyrotate --profile my-wallet --skip-backup --yes
+    # Skip confirmation prompts
+    aptos-keyrotate --profile my-wallet --yes
 
 EOF
 }
@@ -89,17 +90,9 @@ parse_args() {
                 NEW_PRIVATE_KEY_FILE="$2"
                 shift 2
                 ;;
-            --save-to-profile)
-                SAVE_TO_PROFILE="$2"
-                shift 2
-                ;;
             --backup-dir)
                 BACKUP_DIR="$2"
                 shift 2
-                ;;
-            --skip-backup)
-                SKIP_BACKUP=true
-                shift
                 ;;
             --yes)
                 ASSUME_YES=true
@@ -225,15 +218,11 @@ confirm_rotation() {
     info "After rotation:"
     info "  • Your old private key will NO LONGER work for this account"
     info "  • Only the new private key can sign transactions"
-    info "  • This operation CANNOT be easily undone"
+    info "  • Your profile '$PROFILE' will be updated in-place with the new key"
     info ""
-
-    if [[ "$SKIP_BACKUP" == false ]]; then
-        info "Your old private key will be backed up to: $BACKUP_DIR"
-    else
-        warning "Backup is DISABLED. Your old key will NOT be saved!"
-    fi
-
+    info "Safety:"
+    info "  • Your old private key will be backed up to: $BACKUP_DIR"
+    info "  • Automatic rollback if verification fails"
     info ""
     read -p "Do you want to continue? (yes/no): " -r
     echo
@@ -246,15 +235,10 @@ confirm_rotation() {
 
 # Backup current private key
 backup_private_key() {
-    if [[ "$SKIP_BACKUP" == true ]]; then
-        info "Skipping backup (--skip-backup specified)"
-        return 0
-    fi
-
     local address=$1
     local timestamp
     timestamp=$(date +%Y-%m-%d-%H-%M-%S)
-    local backup_file="$BACKUP_DIR/${address}-${timestamp}.key"
+    BACKUP_FILE="$BACKUP_DIR/${address}-${timestamp}.key"
 
     # Create backup directory if it doesn't exist
     mkdir -p "$BACKUP_DIR"
@@ -269,10 +253,10 @@ backup_private_key() {
     fi
 
     # Save to backup file
-    echo "$private_key" > "$backup_file"
-    chmod 600 "$backup_file"  # Set restrictive permissions
+    echo "$private_key" > "$BACKUP_FILE"
+    chmod 600 "$BACKUP_FILE"  # Set restrictive permissions
 
-    success "✓ Old private key backed up to: $backup_file"
+    success "✓ Old private key backed up to: $BACKUP_FILE"
 }
 
 # Validate new private key file exists
@@ -314,28 +298,19 @@ cleanup_generated_keys() {
 
 # Perform key rotation
 rotate_key() {
+    local temp_profile="${PROFILE}-rotated-temp"
     local cmd="aptos account rotate-key --profile $PROFILE"
 
     cmd="$cmd --new-private-key-file $NEW_PRIVATE_KEY_FILE"
-    info "Rotating to private key: $NEW_PRIVATE_KEY_FILE"
-
-    if [[ -n "$SAVE_TO_PROFILE" ]]; then
-        cmd="$cmd --save-to-profile $SAVE_TO_PROFILE"
-        info "Will save rotated profile as: $SAVE_TO_PROFILE"
-    else
-        # Default: save to temporary profile, then swap it with the original
-        local temp_profile="${PROFILE}-rotated-temp"
-        cmd="$cmd --save-to-profile $temp_profile"
-        info "Will update profile: $PROFILE"
-    fi
-
+    cmd="$cmd --save-to-profile $temp_profile"
     cmd="$cmd --assume-yes"
 
     info ""
     info "Executing rotation..."
+    info "Rotating to private key: $NEW_PRIVATE_KEY_FILE"
 
     if ! eval "$cmd"; then
-        error "Key rotation failed!"
+        error "Key rotation transaction failed!"
         cleanup_generated_keys
         exit 1
     fi
@@ -345,11 +320,6 @@ rotate_key() {
 
 # Swap temporary profile with original profile
 swap_profiles() {
-    # If user specified a custom save profile, no swap needed
-    if [[ -n "$SAVE_TO_PROFILE" ]]; then
-        return 0
-    fi
-
     local temp_profile="${PROFILE}-rotated-temp"
 
     info ""
@@ -373,6 +343,48 @@ swap_profiles() {
     success "✓ Profile '$PROFILE' updated with new private key"
 }
 
+# Restore old key from backup
+restore_from_backup() {
+    local url=$1  # Pass URL as parameter since profile might be broken
+    local address=$2
+
+    warning ""
+    warning "Attempting to restore old private key from backup..."
+
+    if [[ ! -f "$BACKUP_FILE" ]]; then
+        error "Backup file not found: $BACKUP_FILE"
+        error "Cannot restore old key!"
+        error "Manual recovery: use the backed up key from $BACKUP_DIR"
+        return 1
+    fi
+
+    local old_private_key
+    old_private_key=$(cat "$BACKUP_FILE")
+
+    # Save old key to a temporary file for aptos CLI
+    local temp_key_file
+    temp_key_file=$(mktemp /tmp/aptos-restore-key.XXXXXX)
+    echo "$old_private_key" > "$temp_key_file"
+
+    # Delete the broken profile
+    aptos config delete-profile --profile "$PROFILE" &> /dev/null || true
+
+    # Recreate profile with old key
+    if aptos init --network custom --rest-url "$url" --private-key-file "$temp_key_file" --profile "$PROFILE" --assume-yes &> /dev/null; then
+        success "✓ Old private key restored to profile '$PROFILE'"
+        info "Rotation was rolled back. You can retry with a different key."
+        rm -f "$temp_key_file"
+        return 0
+    else
+        error "Failed to restore old key to profile"
+        error "Manual recovery required:"
+        info "  1. Your old key is backed up at: $BACKUP_FILE"
+        info "  2. Run: aptos init --network custom --rest-url $url --private-key-file $BACKUP_FILE --profile $PROFILE"
+        rm -f "$temp_key_file"
+        return 1
+    fi
+}
+
 # Verify rotation succeeded
 verify_rotation() {
     local address=$1
@@ -382,37 +394,48 @@ verify_rotation() {
     info ""
     info "Verifying rotation..."
 
+    # Check 1: Auth key changed on-chain
     local new_auth_key
-    new_auth_key=$(get_current_auth_key "$address" "$url")
-
-    if [[ "$new_auth_key" == "$old_auth_key" ]]; then
-        error "Rotation verification failed: authentication key unchanged"
+    if ! new_auth_key=$(get_current_auth_key "$address" "$url" 2>&1); then
+        error "Failed to query new authentication key"
+        restore_from_backup "$url" "$address"
         exit 1
     fi
 
-    success "✓ Rotation verified"
+    if [[ "$new_auth_key" == "$old_auth_key" ]]; then
+        error "Authentication key unchanged on-chain"
+        restore_from_backup "$url" "$address"
+        exit 1
+    fi
+
+    success "✓ On-chain auth key updated: $new_auth_key"
+
+    # Check 2: Profile can query account info
+    info "Testing rotated profile functionality..."
+    if ! aptos account list --profile "$PROFILE" &> /dev/null; then
+        error "Rotated profile cannot query account (key may not work)"
+        restore_from_backup "$url" "$address"
+        exit 1
+    fi
+
+    success "✓ Profile verified functional"
     info ""
     info "New authentication key: $new_auth_key"
 }
 
 # Display success message
 display_success() {
-    local profile_name=${SAVE_TO_PROFILE:-$PROFILE}
-
     success ""
     success "=========================================="
     success "   Key Rotation Completed Successfully"
     success "=========================================="
     info ""
-    info "Active profile: $profile_name"
+    info "Active profile: $PROFILE"
     info ""
-    info "You can now use the new profile:"
-    info "  aptos account list --profile $profile_name"
+    info "You can now use the profile:"
+    info "  aptos account list --profile $PROFILE"
     info ""
-
-    if [[ "$SKIP_BACKUP" == false ]]; then
-        info "Old private key backup location: $BACKUP_DIR"
-    fi
+    info "Old private key backup: $BACKUP_FILE"
 }
 
 # Main function
