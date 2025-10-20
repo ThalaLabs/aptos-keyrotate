@@ -323,7 +323,10 @@ rotate_key() {
         cmd="$cmd --save-to-profile $SAVE_TO_PROFILE"
         info "Will save rotated profile as: $SAVE_TO_PROFILE"
     else
-        cmd="$cmd --skip-saving-profile"
+        # Default: save to temporary profile, then swap it with the original
+        local temp_profile="${PROFILE}-rotated-temp"
+        cmd="$cmd --save-to-profile $temp_profile"
+        info "Will update profile: $PROFILE"
     fi
 
     cmd="$cmd --assume-yes"
@@ -338,6 +341,36 @@ rotate_key() {
     fi
 
     success "✓ Key rotation transaction successful"
+}
+
+# Swap temporary profile with original profile
+swap_profiles() {
+    # If user specified a custom save profile, no swap needed
+    if [[ -n "$SAVE_TO_PROFILE" ]]; then
+        return 0
+    fi
+
+    local temp_profile="${PROFILE}-rotated-temp"
+
+    info ""
+    info "Updating profile configuration..."
+
+    # Delete the old profile
+    if ! aptos config delete-profile --profile "$PROFILE" &> /dev/null; then
+        error "Failed to delete old profile '$PROFILE'"
+        info "The rotated profile is saved as: $temp_profile"
+        exit 1
+    fi
+
+    # Rename the temp profile to the original name
+    if ! aptos config rename-profile --profile "$temp_profile" --new-profile-name "$PROFILE" &> /dev/null; then
+        error "Failed to rename profile '$temp_profile' to '$PROFILE'"
+        info "Original profile deleted, but temp profile rename failed"
+        info "The rotated profile is saved as: $temp_profile"
+        exit 1
+    fi
+
+    success "✓ Profile '$PROFILE' updated with new private key"
 }
 
 # Verify rotation succeeded
@@ -414,6 +447,8 @@ main() {
     generate_new_key
 
     rotate_key
+
+    swap_profiles
 
     verify_rotation "$address" "$url" "$auth_key"
 
